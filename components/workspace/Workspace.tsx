@@ -63,15 +63,27 @@ export function Workspace({ initialTasks, workspace }: WorkspaceProps) {
     setPane4ManuallyClosed(false);
   }, []);
 
-  const addTask = useCallback((status: TaskStatus, name: string) => {
+  const addTask = useCallback(async (status: TaskStatus, name: string) => {
     const newTask = createTask(name, status);
+    // 楽観的更新：UI を先に反映
     setTasks((prev) => [...prev, newTask]);
     setSelectedTaskId(newTask.id);
     setSelectedItem(null);
     setPane4ManuallyClosed(false);
+    // DB に保存
+    try {
+      await fetch("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: newTask.id, name: newTask.name, status: newTask.status }),
+      });
+    } catch (error) {
+      console.error("[addTask] DB 保存失敗:", error);
+    }
   }, []);
 
-  const archiveTask = useCallback((id: string) => {
+  const archiveTask = useCallback(async (id: string) => {
+    // 楽観的更新
     setTasks((prev) => {
       const next = prev.map((t) => (t.id === id ? { ...t, archived: true } : t));
       setSelectedTaskId((prevId) => {
@@ -83,12 +95,33 @@ export function Workspace({ initialTasks, workspace }: WorkspaceProps) {
     });
     setSelectedItem(null);
     setPane4ManuallyClosed(false);
+    // DB に保存
+    try {
+      await fetch(`/api/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: true }),
+      });
+    } catch (error) {
+      console.error("[archiveTask] DB 保存失敗:", error);
+    }
   }, []);
 
-  const restoreTask = useCallback((id: string) => {
+  const restoreTask = useCallback(async (id: string) => {
+    // 楽観的更新
     setTasks((prev) =>
       prev.map((t) => (t.id === id ? { ...t, archived: false } : t)),
     );
+    // DB に保存
+    try {
+      await fetch(`/api/tasks/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived: false }),
+      });
+    } catch (error) {
+      console.error("[restoreTask] DB 保存失敗:", error);
+    }
   }, []);
 
   // ===== セクション操作（SpecEditorPane と DetailMemoPane が共有） =====
