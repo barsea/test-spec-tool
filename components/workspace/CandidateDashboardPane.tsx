@@ -1,680 +1,605 @@
 "use client";
 
 /**
- * Pane 3: 候補者ダッシュボード（ADR-0015 §19 で再設計）。
+ * Pane 2: 仕様書エディタ
  *
- * 「人物軸の編集」として、ヘッダー帯（Collapsible）+ 採用条件カード + 選考フローカード
- * の 3 要素で構成。判断の 3 問い（Q1: 採る価値 / Q2: 採れるか / Q3: 手遅れか）に
- * スクロールなしで即答できることが目標。
+ * 選択中タスクの 4 階層アウトライン（大項目→中項目→試験項目→確認項目）を
+ * 展開/折りたたみしながらインライン編集するエディタ。
  *
- * セクション順序: ヘッダー帯 → 採用条件 → 選考フロー
- *
- * `AxisScoreRow` は Pane 4 モード 2 評価セクションでも使うため引き続き export する。
+ * 責務:
+ *   - ツリー構造の展開/折りたたみ（Collapsible）
+ *   - 各階層のテキスト inline 編集（InlineTextField）
+ *   - 各階層の追加・削除（+ / Trash2 ボタン）
+ *   - 項目クリックで Pane 3（詳細・メモ）を開く
  */
 
 import { useState } from "react";
-import {
-  ArrowUpRight,
-  Check,
-  Circle,
-  CircleDot,
-  ChevronDown,
-  Mail,
-  Phone,
-  MapPin,
-  X,
-  Star,
-  StarHalf,
-} from "lucide-react";
+import { ChevronRight, Plus, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import {
-  type Profile,
-  type StageStatus,
-  type Scorecard,
-  type SelectedDetail,
-  STAGE_ORDER,
+  type Task,
+  type Section,
+  type MiddleItem,
+  type TestCase,
+  type CheckItem,
+  type SelectedItem,
 } from "@/lib/schema";
-import { STAGE_LABELS, PANE3_SECTION, PANE4_SECTION_IDS } from "@/lib/labels";
-import {
-  getScorecardsAverageScore,
-  deriveStageStatus,
-} from "@/lib/computed/scorecards";
-import { calculateAge } from "@/lib/computed/profile";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardAction,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
+import { InlineTextField } from "@/components/primitives";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Collapsible,
-  CollapsibleTrigger,
   CollapsibleContent,
+  CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import {
-  InlineTextField,
-  InlineDateField,
-  InlineComboboxField,
-  InlineTextareaField,
-  InlineFieldRow,
-  ScoreLabel,
-  SectionLabel,
-  type ComboOption,
-} from "@/components/primitives";
 
-// ===== AxisScoreRow（Pane 4 モード 2 でも使う、export） =====
+// ===== ユーティリティ =====
 
-export function AxisScoreRow({
-  label,
-  value,
-  bold = false,
-  editable = false,
-  onChange,
-  onReset,
-}: {
-  label: string;
-  value: number | null;
-  bold?: boolean;
-  editable?: boolean;
-  onChange?: (value: number) => void;
-  onReset?: () => void;
-}) {
-  if (value === null && !editable) {
-    return (
-      <div className="flex items-center justify-between gap-2 text-sm">
-        <span
-          className={cn(
-            "text-muted-foreground",
-            bold && "font-medium text-foreground",
-          )}
-        >
-          {label}
-        </span>
-        <span className="flex items-center gap-2 text-muted-foreground">
-          <span className="tabular-nums">—</span>
-          <span className="text-[11px]">未評価</span>
-        </span>
-      </div>
-    );
-  }
-  const v = value ?? 0;
-  const floor = Math.floor(v);
-  const hasHalf = !editable && v - floor >= 0.5;
-  return (
-    <div className="flex items-center justify-between gap-2 text-sm">
-      <span
-        className={cn(
-          "text-muted-foreground",
-          bold && "font-medium text-foreground",
-        )}
-      >
-        {label}
-      </span>
-      <span className="flex items-center gap-2">
-        <span className="flex items-center gap-0.5">
-          {[1, 2, 3, 4, 5].map((n) => {
-            const isFull = n <= floor;
-            const isHalf = hasHalf && n === floor + 1;
-            const StarComp = isHalf ? StarHalf : Star;
-            const filled = isFull || isHalf;
-            const starEl = (
-              <StarComp
-                className={cn(
-                  "size-3",
-                  filled
-                    ? "fill-primary text-primary"
-                    : "fill-muted-foreground/20 text-muted-foreground/30",
-                )}
-                aria-hidden="true"
-              />
-            );
-            if (editable && onChange) {
-              return (
-                <button
-                  key={n}
-                  type="button"
-                  onClick={() => onChange(n)}
-                  className="rounded-sm transition-opacity outline-none hover:opacity-70 focus-visible:ring-3 focus-visible:ring-ring/50"
-                  aria-label={`${label} を ${n} に設定`}
-                >
-                  {starEl}
-                </button>
-              );
-            }
-            return <span key={n}>{starEl}</span>;
-          })}
-        </span>
-        <span
-          className={cn(
-            "min-w-[2.25rem] text-right text-foreground tabular-nums",
-            bold && "font-medium",
-            value === null && "text-muted-foreground",
-          )}
-        >
-          {value !== null ? value.toFixed(1) : "—"}
-        </span>
-        {editable && onReset && value !== null && (
-          <button
-            type="button"
-            onClick={onReset}
-            className="ml-1 inline-flex size-5 items-center justify-center rounded text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
-            aria-label={`${label} の評価をリセット`}
-          >
-            <X className="size-3" />
-          </button>
-        )}
-      </span>
-    </div>
-  );
+function genId(prefix: string) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 }
 
-// ===== ↗ ジャンプアイコン（ADR-0014 §4、常時表示） =====
+function makeSection(text = ""): Section {
+  return { id: genId("s"), text, items: [], note: "", warning: "", memo: "" };
+}
+function makeMiddleItem(text = ""): MiddleItem {
+  return { id: genId("m"), text, cases: [], note: "", warning: "", memo: "" };
+}
+function makeTestCase(text = ""): TestCase {
+  return { id: genId("c"), text, checks: [], note: "", warning: "", memo: "" };
+}
+function makeCheckItem(text = ""): CheckItem {
+  return { id: genId("ch"), text, note: "", warning: "", memo: "" };
+}
 
-function JumpIcon({
+// ===== "メモ" ボタン（ホバー時に表示） =====
+
+function MemoButton({
+  onClick,
   selected,
-  className,
 }: {
+  onClick: () => void;
   selected: boolean;
-  className?: string;
 }) {
   return (
-    <ArrowUpRight
-      aria-hidden="true"
+    <button
+      type="button"
+      onClick={onClick}
       className={cn(
-        "size-4 shrink-0",
-        selected ? "text-primary" : "text-muted-foreground",
-        className,
+        "shrink-0 rounded px-1.5 py-0.5 text-[11px] outline-none transition-colors",
+        "focus-visible:ring-3 focus-visible:ring-ring/50",
+        selected
+          ? "bg-primary/10 text-primary"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground",
       )}
-    />
-  );
-}
-
-// ===== ステージアイコン（状態軸、ADR-0014 §7） =====
-
-function StageIcon({ status }: { status: StageStatus }) {
-  if (status === "done") {
-    return (
-      <span
-        className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"
-        aria-label="完了"
-      >
-        <Check className="size-3" />
-      </span>
-    );
-  }
-  if (status === "planned") {
-    return (
-      <span
-        className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground"
-        aria-label="予定"
-      >
-        <CircleDot className="size-4" />
-      </span>
-    );
-  }
-  return (
-    <span
-      className="mt-0.5 inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground"
-      aria-label="未着手"
+      aria-label="詳細・メモを開く"
     >
-      <Circle className="size-4" />
-    </span>
+      メモ
+    </button>
   );
 }
 
-// ===== Card: 採用条件（ADR-0015 §19.4 追加決定 M） =====
+// ===== 折りたたみトリガー用ボタン =====
 
-function RecruitingConditionsCard({
-  profile,
-  setProfile,
-}: {
-  profile: Profile;
-  setProfile: React.Dispatch<React.SetStateAction<Profile>>;
-}) {
-  const updateField = <K extends keyof Profile>(key: K, value: Profile[K]) =>
-    setProfile((p) => ({ ...p, [key]: value }));
-
+function CollapseToggle({ open }: { open: boolean }) {
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle emphasis="prominent">
-          {PANE3_SECTION.recruitingConditions}
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <dl className="flex flex-col gap-2.5 text-sm">
-          <InlineFieldRow label="希望年収">
-            <div className="flex items-center gap-1.5">
-              <div className="w-20">
-                <InlineTextField
-                  value={profile.desiredSalaryMin}
-                  onSave={(v) => updateField("desiredSalaryMin", v)}
-                  ariaLabel="希望年収（下限）"
-                  placeholder="—"
-                />
-              </div>
-              <span className="shrink-0 text-xs text-muted-foreground">〜</span>
-              <div className="w-20">
-                <InlineTextField
-                  value={profile.desiredSalaryMax}
-                  onSave={(v) => updateField("desiredSalaryMax", v)}
-                  ariaLabel="希望年収（上限）"
-                  placeholder="—"
-                />
-              </div>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                万円
-              </span>
-            </div>
-          </InlineFieldRow>
-          <InlineFieldRow label="入社可能日">
-            <InlineDateField
-              value={profile.availableStartDate}
-              onSave={(v) => updateField("availableStartDate", v)}
-              ariaLabel="入社可能日"
-            />
-          </InlineFieldRow>
-        </dl>
-      </CardContent>
-    </Card>
+    <CollapsibleTrigger
+      render={
+        <button
+          type="button"
+          className="flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+        />
+      }
+    >
+      <ChevronRight
+        aria-hidden
+        className={cn("size-3.5 transition-transform", open && "rotate-90")}
+      />
+    </CollapsibleTrigger>
   );
 }
 
-// ===== Card: 選考フロー（ADR-0015 §19.5 担当者コメント統合版） =====
+// ===== 確認項目（第4階層 - 末端） =====
 
-function ScreeningFlowListCard({
-  scorecards,
-  selectedDetail,
-  onOpenDetail,
+function CheckItemRow({
+  item,
+  sectionId,
+  middleId,
+  caseId,
+  selectedItem,
+  onSelect,
+  onUpdate,
+  onDelete,
 }: {
-  scorecards: Scorecard[];
-  selectedDetail: SelectedDetail;
-  onOpenDetail: (next: SelectedDetail, scrollAnchor?: string) => void;
+  item: CheckItem;
+  sectionId: string;
+  middleId: string;
+  caseId: string;
+  selectedItem: SelectedItem;
+  onSelect: (item: SelectedItem) => void;
+  onUpdate: (text: string) => void;
+  onDelete: () => void;
 }) {
-  const allStages: Scorecard[] = STAGE_ORDER.map(
-    (stage) =>
-      scorecards.find((s) => s.stage === stage) ?? {
-        stage,
-        label: STAGE_LABELS[stage],
-        date: "",
-        format: "",
-        interviewer: "",
-        axisScores: {
-          achievements: null,
-          thinkingAbility: null,
-          communication: null,
-          cultureFit: null,
-        },
-        attachments: [],
-      },
-  );
+  const selected =
+    selectedItem?.type === "check" &&
+    selectedItem.sectionId === sectionId &&
+    selectedItem.middleId === middleId &&
+    selectedItem.caseId === caseId &&
+    selectedItem.checkId === item.id;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle emphasis="prominent">
-          {PANE3_SECTION.screeningFlow}
-        </CardTitle>
-        <CardDescription>
-          {PANE3_SECTION.screeningFlowDescription}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex flex-col gap-1">
-          {allStages.map((s, idx) => {
-            const selected =
-              selectedDetail?.type === "stage" &&
-              selectedDetail.stage === s.stage;
-            const status = deriveStageStatus(s.date, s.decision);
-            const showComment = status === "done" && !!s.comment;
-
-            return (
-              <div key={s.stage}>
-                {idx > 0 && <Separator className="my-1" />}
-                <button
-                  type="button"
-                  onClick={() =>
-                    onOpenDetail(
-                      { type: "stage", stage: s.stage },
-                      PANE4_SECTION_IDS.m2.info,
-                    )
-                  }
-                  aria-label={`Pane 4 で ${s.label} を開く`}
-                  className={cn(
-                    "flex w-full items-start gap-3 rounded-md px-2 py-2 text-left transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
-                    selected
-                      ? "bg-accent text-accent-foreground"
-                      : "hover:bg-muted/40",
-                  )}
-                >
-                  <StageIcon status={status} />
-                  <div className="flex min-w-0 flex-1 flex-col gap-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm font-medium text-foreground">
-                        {s.label}
-                      </span>
-                      <div className="flex shrink-0 items-center gap-2">
-                        {s.date && (
-                          <span className="text-xs text-muted-foreground">
-                            {s.date}
-                          </span>
-                        )}
-                        {s.decision && (
-                          <Badge variant="outline" size="xs">
-                            {s.decision}
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {s.interviewer || "未予定"}
-                    </p>
-                    {showComment && (
-                      <p className="mt-0.5 line-clamp-2 border-l-2 border-primary/20 pl-2 text-xs leading-relaxed text-foreground/80">
-                        &quot;{s.comment}&quot;
-                      </p>
-                    )}
-                  </div>
-                  <JumpIcon selected={selected} className="mt-0.5" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ===== 応募経路の選択肢（Pane 3 ヘッダー帯トグル内で使用） =====
-
-const INITIAL_SOURCE_OPTIONS: ComboOption[] = [
-  { value: "社員リファラル", description: "既存社員からの紹介で応募" },
-  { value: "Wantedly", description: "Wantedly 経由の応募" },
-  { value: "LinkedIn", description: "LinkedIn 経由の応募" },
-  { value: "直接応募", description: "自社採用ページから直接応募" },
-  { value: "エージェント経由", description: "採用エージェントを介した応募" },
-];
-
-// ===== ヘッダー帯トグル内の連絡先行 =====
-
-function ContactRow({
-  icon,
-  label,
-  children,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <li className="flex items-center gap-3">
+    <li
+      className={cn(
+        "group/check flex items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors",
+        selected ? "bg-accent text-accent-foreground" : "hover:bg-muted/40",
+      )}
+    >
       <span
-        className="flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
-        aria-hidden="true"
-      >
-        {icon}
-      </span>
-      <span className="sr-only">{label}</span>
-      <div className="min-w-0 flex-1">{children}</div>
+        className="size-1.5 shrink-0 rounded-full bg-border"
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <InlineTextField
+          value={item.text}
+          onSave={onUpdate}
+          ariaLabel="確認項目"
+          placeholder="確認項目を入力"
+        />
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/check:opacity-100 focus-within:opacity-100">
+        <MemoButton
+          selected={selected}
+          onClick={() =>
+            onSelect({
+              type: "check",
+              sectionId,
+              middleId,
+              caseId,
+              checkId: item.id,
+            })
+          }
+        />
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          onClick={onDelete}
+          className="text-muted-foreground hover:text-destructive"
+          aria-label="確認項目を削除"
+        >
+          <Trash2 />
+        </Button>
+      </div>
     </li>
   );
 }
 
-// ===== Card: 応募情報（折りたたみ可能） =====
+// ===== 試験項目（第3階層） =====
 
-function ApplicationInfoCardContent({
-  profile,
-  setProfile,
+function TestCaseNode({
+  case_,
+  sectionId,
+  middleId,
+  selectedItem,
+  onSelect,
+  onUpdateText,
+  onDelete,
+  onUpdateChecks,
 }: {
-  profile: Profile;
-  setProfile: React.Dispatch<React.SetStateAction<Profile>>;
+  case_: TestCase;
+  sectionId: string;
+  middleId: string;
+  selectedItem: SelectedItem;
+  onSelect: (item: SelectedItem) => void;
+  onUpdateText: (text: string) => void;
+  onDelete: () => void;
+  onUpdateChecks: (checks: CheckItem[]) => void;
 }) {
-  const [sourceOptions, setSourceOptions] = useState<ComboOption[]>(
-    INITIAL_SOURCE_OPTIONS,
-  );
-
-  const updateField = <K extends keyof Profile>(key: K, value: Profile[K]) =>
-    setProfile((p) => ({ ...p, [key]: value }));
-
-  const handleAddSource = (newOpt: ComboOption) =>
-    setSourceOptions((prev) =>
-      prev.find((o) => o.value === newOpt.value) ? prev : [...prev, newOpt],
-    );
+  const [open, setOpen] = useState(true);
+  const selected =
+    selectedItem?.type === "case" &&
+    selectedItem.sectionId === sectionId &&
+    selectedItem.middleId === middleId &&
+    selectedItem.caseId === case_.id;
 
   return (
-    <div className="flex flex-col">
-      {/* 基本（名前 / 生年月日 / 応募経路 / 採用担当） — Card タイトル「応募情報」が見出しを兼ねる */}
-      <section className="flex flex-col gap-3 pb-4">
-        <dl className="flex flex-col gap-2.5 text-sm">
-          <InlineFieldRow label="名前">
-            <InlineTextField
-              value={profile.name}
-              onSave={(v) => updateField("name", v)}
-              ariaLabel="名前"
-            />
-          </InlineFieldRow>
-          <InlineFieldRow label="生年月日">
-            <div className="flex items-center gap-2">
-              <div className="flex-1">
-                <InlineDateField
-                  value={profile.birthday}
-                  onSave={(v) => updateField("birthday", v)}
-                  ariaLabel="生年月日"
-                />
-              </div>
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {calculateAge(profile.birthday)}
-              </span>
-            </div>
-          </InlineFieldRow>
-          <InlineFieldRow label="応募経路">
-            <InlineComboboxField
-              value={profile.source}
-              options={sourceOptions}
-              onSave={(v) => updateField("source", v)}
-              onCreate={handleAddSource}
-              ariaLabel="応募経路"
-            />
-          </InlineFieldRow>
-          <InlineFieldRow label="採用担当">
-            <InlineTextField
-              value={profile.recruiter}
-              onSave={(v) => updateField("recruiter", v)}
-              ariaLabel="採用担当"
-            />
-          </InlineFieldRow>
-        </dl>
-      </section>
-
-      <Separator />
-
-      {/* 連絡先 */}
-      <section className="flex flex-col gap-3 py-4">
-        <SectionLabel>連絡先</SectionLabel>
-        <ul className="flex flex-col gap-2.5">
-          <ContactRow
-            icon={<Mail className="size-3.5" />}
-            label="メールアドレス"
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div
+        className={cn(
+          "group/case flex items-center gap-1 rounded-md px-2 py-1.5 transition-colors",
+          selected ? "bg-accent text-accent-foreground" : "hover:bg-muted/40",
+        )}
+      >
+        <CollapseToggle open={open} />
+        <div className="min-w-0 flex-1">
+          <InlineTextField
+            value={case_.text}
+            onSave={onUpdateText}
+            ariaLabel="試験項目"
+            placeholder="試験項目を入力"
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/case:opacity-100 focus-within:opacity-100">
+          <MemoButton
+            selected={selected}
+            onClick={() =>
+              onSelect({
+                type: "case",
+                sectionId,
+                middleId,
+                caseId: case_.id,
+              })
+            }
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={onDelete}
+            className="text-muted-foreground hover:text-destructive"
+            aria-label="試験項目を削除"
           >
-            <InlineTextField
-              value={profile.email}
-              onSave={(v) => updateField("email", v)}
-              ariaLabel="メールアドレス"
-              inputType="email"
-            />
-          </ContactRow>
-          <ContactRow icon={<Phone className="size-3.5" />} label="電話番号">
-            <InlineTextField
-              value={profile.phone}
-              onSave={(v) => updateField("phone", v)}
-              ariaLabel="電話番号"
-              inputType="tel"
-            />
-          </ContactRow>
-          <ContactRow icon={<MapPin className="size-3.5" />} label="住所">
-            <InlineTextField
-              value={profile.address}
-              onSave={(v) => updateField("address", v)}
-              ariaLabel="住所"
-            />
-          </ContactRow>
-        </ul>
-      </section>
-
-      <Separator />
-
-      {/* 職務経歴 */}
-      <section className="flex flex-col gap-2 py-4">
-        <SectionLabel>職務経歴</SectionLabel>
-        <InlineTextareaField
-          value={profile.careerText}
-          onSave={(v) => updateField("careerText", v)}
-          ariaLabel="職務経歴"
-        />
-      </section>
-
-      <Separator />
-
-      {/* 志望動機 */}
-      <section className="flex flex-col gap-2 pt-4">
-        <SectionLabel>志望動機</SectionLabel>
-        <InlineTextareaField
-          value={profile.motivationFull}
-          onSave={(v) => updateField("motivationFull", v)}
-          ariaLabel="志望動機"
-        />
-      </section>
-    </div>
-  );
-}
-
-function ApplicationInfoCard({
-  profile,
-  setProfile,
-  open,
-  onOpenChange,
-  candidateKey,
-}: {
-  profile: Profile;
-  setProfile: React.Dispatch<React.SetStateAction<Profile>>;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  candidateKey: string;
-}) {
-  return (
-    <Card>
-      <Collapsible open={open} onOpenChange={onOpenChange}>
-        <CollapsibleTrigger
-          nativeButton={false}
-          render={
-            <CardHeader className="group/trigger cursor-pointer rounded-md outline-none focus-visible:ring-3 focus-visible:ring-ring/50" />
-          }
-        >
-          <CardTitle emphasis="prominent">
-            {PANE3_SECTION.applicationInfo}
-          </CardTitle>
-          <CardAction>
-            <ChevronDown
-              aria-hidden="true"
-              className="size-4 text-muted-foreground transition-[color,transform] group-hover/trigger:text-foreground in-data-[panel-open]:rotate-180"
-            />
-            <span className="sr-only">{`${PANE3_SECTION.applicationInfo}を開く`}</span>
-          </CardAction>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <CardContent>
-            <ApplicationInfoCardContent
-              key={candidateKey}
-              profile={profile}
-              setProfile={setProfile}
-            />
-          </CardContent>
-        </CollapsibleContent>
-      </Collapsible>
-    </Card>
-  );
-}
-
-// ===== 候補者ヘッダー（固定。Avatar + 名前 + 年齢 / スコア） =====
-
-function CandidateHeader({
-  profile,
-  scorecards,
-}: {
-  profile: Profile;
-  scorecards: Scorecard[];
-}) {
-  return (
-    <div className="flex items-center gap-5">
-      <Avatar className="size-16">
-        <AvatarFallback className="bg-primary/10 text-xl text-primary">
-          {profile.name[0] ?? "?"}
-        </AvatarFallback>
-      </Avatar>
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <h2 className="font-heading truncate text-xl font-semibold text-foreground">
-          {profile.name || "名前未設定"}
-        </h2>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          {profile.birthday && <span>{calculateAge(profile.birthday)}</span>}
-          {profile.birthday && <span aria-hidden="true">·</span>}
-          <ScoreLabel value={getScorecardsAverageScore(scorecards)} />
+            <Trash2 />
+          </Button>
         </div>
       </div>
-    </div>
+
+      <CollapsibleContent>
+        <div className="ml-4 flex flex-col gap-0.5 border-l border-border/40 pb-1 pl-2 pt-0.5">
+          <ul className="flex flex-col gap-0.5">
+            {case_.checks.map((ch) => (
+              <CheckItemRow
+                key={ch.id}
+                item={ch}
+                sectionId={sectionId}
+                middleId={middleId}
+                caseId={case_.id}
+                selectedItem={selectedItem}
+                onSelect={onSelect}
+                onUpdate={(text) =>
+                  onUpdateChecks(
+                    case_.checks.map((c) =>
+                      c.id === ch.id ? { ...c, text } : c,
+                    ),
+                  )
+                }
+                onDelete={() =>
+                  onUpdateChecks(case_.checks.filter((c) => c.id !== ch.id))
+                }
+              />
+            ))}
+          </ul>
+          <AddLineButton
+            label="確認項目を追加"
+            onClick={() =>
+              onUpdateChecks([...case_.checks, makeCheckItem()])
+            }
+          />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }
 
-// ===== Pane 3 メイン =====
+// ===== 中項目（第2階層） =====
 
-export function CandidateDashboardPane({
-  profile,
-  scorecards,
-  selectedDetail,
-  onOpenDetail,
-  setProfile,
-  applicationInfoOpen,
-  onApplicationInfoOpenChange,
-  selectedCandidateId,
+function MiddleItemNode({
+  item,
+  sectionId,
+  selectedItem,
+  onSelect,
+  onUpdateText,
+  onDelete,
+  onUpdateCases,
 }: {
-  profile: Profile;
-  scorecards: Scorecard[];
-  selectedDetail: SelectedDetail;
-  onOpenDetail: (next: SelectedDetail, scrollAnchor?: string) => void;
-  setProfile: React.Dispatch<React.SetStateAction<Profile>>;
-  applicationInfoOpen: boolean;
-  onApplicationInfoOpenChange: (open: boolean) => void;
-  selectedCandidateId: string;
+  item: MiddleItem;
+  sectionId: string;
+  selectedItem: SelectedItem;
+  onSelect: (item: SelectedItem) => void;
+  onUpdateText: (text: string) => void;
+  onDelete: () => void;
+  onUpdateCases: (cases: TestCase[]) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const selected =
+    selectedItem?.type === "middle" &&
+    selectedItem.sectionId === sectionId &&
+    selectedItem.middleId === item.id;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div
+        className={cn(
+          "group/middle flex items-center gap-1 rounded-md px-2 py-1.5 transition-colors",
+          selected ? "bg-accent text-accent-foreground" : "hover:bg-muted/40",
+        )}
+      >
+        <CollapseToggle open={open} />
+        <div className="min-w-0 flex-1 text-sm font-medium">
+          <InlineTextField
+            value={item.text}
+            onSave={onUpdateText}
+            ariaLabel="中項目"
+            placeholder="中項目を入力"
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/middle:opacity-100 focus-within:opacity-100">
+          <MemoButton
+            selected={selected}
+            onClick={() =>
+              onSelect({ type: "middle", sectionId, middleId: item.id })
+            }
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={onDelete}
+            className="text-muted-foreground hover:text-destructive"
+            aria-label="中項目を削除"
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </div>
+
+      <CollapsibleContent>
+        <div className="ml-4 flex flex-col gap-0.5 border-l border-border/40 pb-1 pl-2 pt-0.5">
+          <div className="flex flex-col gap-0.5">
+            {item.cases.map((case_) => (
+              <TestCaseNode
+                key={case_.id}
+                case_={case_}
+                sectionId={sectionId}
+                middleId={item.id}
+                selectedItem={selectedItem}
+                onSelect={onSelect}
+                onUpdateText={(text) =>
+                  onUpdateCases(
+                    item.cases.map((c) =>
+                      c.id === case_.id ? { ...c, text } : c,
+                    ),
+                  )
+                }
+                onDelete={() =>
+                  onUpdateCases(item.cases.filter((c) => c.id !== case_.id))
+                }
+                onUpdateChecks={(checks) =>
+                  onUpdateCases(
+                    item.cases.map((c) =>
+                      c.id === case_.id ? { ...c, checks } : c,
+                    ),
+                  )
+                }
+              />
+            ))}
+          </div>
+          <AddLineButton
+            label="試験項目を追加"
+            onClick={() => onUpdateCases([...item.cases, makeTestCase()])}
+          />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+// ===== 大項目（第1階層） =====
+
+function SectionNode({
+  section,
+  selectedItem,
+  onSelect,
+  onUpdateText,
+  onDelete,
+  onUpdateItems,
+}: {
+  section: Section;
+  selectedItem: SelectedItem;
+  onSelect: (item: SelectedItem) => void;
+  onUpdateText: (text: string) => void;
+  onDelete: () => void;
+  onUpdateItems: (items: MiddleItem[]) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const selected =
+    selectedItem?.type === "section" &&
+    selectedItem.sectionId === section.id;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div
+        className={cn(
+          "group/section flex items-center gap-1 rounded-md px-2 py-2 transition-colors",
+          selected ? "bg-accent text-accent-foreground" : "hover:bg-muted/40",
+        )}
+      >
+        <CollapseToggle open={open} />
+        <div className="min-w-0 flex-1 text-sm font-semibold">
+          <InlineTextField
+            value={section.text}
+            onSave={onUpdateText}
+            ariaLabel="大項目"
+            placeholder="大項目を入力"
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/section:opacity-100 focus-within:opacity-100">
+          <MemoButton
+            selected={selected}
+            onClick={() =>
+              onSelect({ type: "section", sectionId: section.id })
+            }
+          />
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-xs"
+            onClick={onDelete}
+            className="text-muted-foreground hover:text-destructive"
+            aria-label="大項目を削除"
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </div>
+
+      <CollapsibleContent>
+        <div className="ml-4 flex flex-col gap-0.5 border-l border-border/40 pb-1 pl-2 pt-0.5">
+          <div className="flex flex-col gap-0.5">
+            {section.items.map((item) => (
+              <MiddleItemNode
+                key={item.id}
+                item={item}
+                sectionId={section.id}
+                selectedItem={selectedItem}
+                onSelect={onSelect}
+                onUpdateText={(text) =>
+                  onUpdateItems(
+                    section.items.map((m) =>
+                      m.id === item.id ? { ...m, text } : m,
+                    ),
+                  )
+                }
+                onDelete={() =>
+                  onUpdateItems(section.items.filter((m) => m.id !== item.id))
+                }
+                onUpdateCases={(cases) =>
+                  onUpdateItems(
+                    section.items.map((m) =>
+                      m.id === item.id ? { ...m, cases } : m,
+                    ),
+                  )
+                }
+              />
+            ))}
+          </div>
+          <AddLineButton
+            label="中項目を追加"
+            onClick={() =>
+              onUpdateItems([...section.items, makeMiddleItem()])
+            }
+          />
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+// ===== インライン追加ボタン =====
+
+function AddLineButton({
+  label,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
 }) {
   return (
-    <section className="min-w-0 flex-1 bg-canvas">
-      <ScrollArea className="h-full">
-        <div className="mx-auto flex max-w-3xl flex-col gap-4 px-8 py-8">
-          <CandidateHeader profile={profile} scorecards={scorecards} />
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+    >
+      <Plus className="size-3" aria-hidden />
+      {label}
+    </button>
+  );
+}
 
-          <ApplicationInfoCard
-            profile={profile}
-            setProfile={setProfile}
-            open={applicationInfoOpen}
-            onOpenChange={onApplicationInfoOpenChange}
-            candidateKey={selectedCandidateId}
-          />
+// ===== Pane 2 メイン =====
 
-          <RecruitingConditionsCard profile={profile} setProfile={setProfile} />
+type SpecEditorPaneProps = {
+  task: Task;
+  selectedItem: SelectedItem;
+  onSelectItem: (item: SelectedItem) => void;
+  onUpdateSections: (sections: Section[]) => void;
+};
 
-          <ScreeningFlowListCard
-            scorecards={scorecards}
-            selectedDetail={selectedDetail}
-            onOpenDetail={onOpenDetail}
-          />
+export function SpecEditorPane({
+  task,
+  selectedItem,
+  onSelectItem,
+  onUpdateSections,
+}: SpecEditorPaneProps) {
+  const addSection = () => {
+    onUpdateSections([...task.sections, makeSection()]);
+  };
+
+  const updateSectionText = (sectionId: string, text: string) => {
+    onUpdateSections(
+      task.sections.map((s) => (s.id === sectionId ? { ...s, text } : s)),
+    );
+  };
+
+  const deleteSection = (sectionId: string) => {
+    onUpdateSections(task.sections.filter((s) => s.id !== sectionId));
+    // 削除した大項目が選択中だった場合、選択を解除
+    if (
+      selectedItem &&
+      "sectionId" in selectedItem &&
+      selectedItem.sectionId === sectionId
+    ) {
+      onSelectItem(null);
+    }
+  };
+
+  const updateSectionItems = (sectionId: string, items: MiddleItem[]) => {
+    onUpdateSections(
+      task.sections.map((s) => (s.id === sectionId ? { ...s, items } : s)),
+    );
+  };
+
+  return (
+    <section className="flex min-w-0 flex-1 flex-col bg-canvas">
+      <header className="flex h-12 shrink-0 items-center border-b border-border px-5">
+        <h2 className="truncate text-sm font-semibold text-foreground">
+          {task.name || "仕様書エディタ"}
+        </h2>
+      </header>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="px-5 py-4">
+          {task.sections.length === 0 ? (
+            <div className="flex flex-col items-center gap-3 py-16 text-center">
+              <p className="text-sm text-muted-foreground">
+                大項目を追加してテスト仕様書を作成しましょう
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addSection}
+              >
+                <Plus />
+                大項目を追加
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1">
+              {task.sections.map((section) => (
+                <SectionNode
+                  key={section.id}
+                  section={section}
+                  selectedItem={selectedItem}
+                  onSelect={onSelectItem}
+                  onUpdateText={(text) => updateSectionText(section.id, text)}
+                  onDelete={() => deleteSection(section.id)}
+                  onUpdateItems={(items) =>
+                    updateSectionItems(section.id, items)
+                  }
+                />
+              ))}
+              <button
+                type="button"
+                onClick={addSection}
+                className="mt-2 flex items-center gap-1.5 rounded-md px-2 py-1.5 text-sm text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                <Plus className="size-4" aria-hidden />
+                大項目を追加
+              </button>
+            </div>
+          )}
         </div>
       </ScrollArea>
     </section>

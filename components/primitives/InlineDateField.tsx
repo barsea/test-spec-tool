@@ -68,6 +68,7 @@ export function InlineDateField({
           mode="single"
           selected={selected}
           onSelect={(d) => {
+            if (!d) return;
             const next = formatISODate(d);
             if (next !== value) onSave(next);
             setOpen(false);

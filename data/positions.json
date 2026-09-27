@@ -1,19 +1,20 @@
 [
   {
-    "id": "d-product",
-    "name": "プロダクト開発",
+    "id": "d-backend",
+    "name": "バックエンド",
     "positions": [
-      { "id": "p-fe", "name": "フロントエンドエンジニア", "count": 4 },
-      { "id": "p-be", "name": "バックエンドエンジニア", "count": 3 },
-      { "id": "p-design", "name": "デザイナー", "count": 2 }
+      { "id": "p-auth", "name": "認証・認可", "count": 3 },
+      { "id": "p-api", "name": "API", "count": 5 },
+      { "id": "p-db", "name": "DB / データ", "count": 2 }
     ]
   },
   {
-    "id": "d-biz",
-    "name": "ビジネス",
+    "id": "d-frontend",
+    "name": "フロントエンド",
     "positions": [
-      { "id": "p-pm", "name": "プロダクトマネージャー", "count": 3 },
-      { "id": "p-sales", "name": "セールス", "count": 4 }
+      { "id": "p-ui", "name": "UI コンポーネント", "count": 2 },
+      { "id": "p-form", "name": "フォーム", "count": 4 },
+      { "id": "p-router", "name": "ルーティング", "count": 1 }
     ]
   }
 ]
